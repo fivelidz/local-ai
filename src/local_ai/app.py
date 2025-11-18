@@ -178,7 +178,7 @@ class ModelSelector(Container):
     ]
     
     def compose(self) -> ComposeResult:
-        with Collapsible(title="🤖 Models [Ctrl+M]", collapsed=False, id="models-collapsible"):
+        with Collapsible(title="🤖 Models Ctrl+M", collapsed=False, id="models-collapsible"):
             yield OptionList(
                 *[Option(f"{icon}  [dim]{desc}[/]", id=model) 
                   for icon, model, desc in self.MODELS],
@@ -190,7 +190,7 @@ class SessionList(Container):
     """Collapsible session list"""
     
     def compose(self) -> ComposeResult:
-        with Collapsible(title="📂 Sessions [Ctrl+S]", collapsed=False, id="sessions-collapsible"):
+        with Collapsible(title="📂 Sessions Ctrl+S", collapsed=False, id="sessions-collapsible"):
             yield Button("➕ New Chat", id="new-chat-btn", variant="primary")
             yield OptionList(id="session-list")
 
