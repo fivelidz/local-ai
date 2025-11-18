@@ -1,6 +1,6 @@
 """
 Local AI - tmux-style Terminal Chat Interface for Ollama
-Features: Split panes, mouse support, animated loading
+Features: Collapsible panels, shortcuts guide, mouse support, animations
 """
 
 from textual.app import App, ComposeResult
@@ -8,11 +8,12 @@ from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.widgets import (
     Header, Footer, Static, Input, Button, 
     ListView, ListItem, Label, Select, LoadingIndicator,
-    TabbedContent, TabPane, OptionList
+    TabbedContent, TabPane, OptionList, Collapsible
 )
 from textual.widgets.option_list import Option
 from textual.binding import Binding
 from textual.reactive import reactive
+from textual.screen import ModalScreen
 from textual import on, work
 from textual.worker import Worker, get_current_worker
 from datetime import datetime
@@ -25,11 +26,7 @@ import asyncio
 CHATS_DIR = Path.home() / "Models" / "chats"
 CHATS_DIR.mkdir(parents=True, exist_ok=True)
 
-# Loading animation frames (ASCII art)
-LOADING_FRAMES = [
-    "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"
-]
-
+# Loading animations
 THINKING_ANIMATIONS = [
     "🤔 Thinking.",
     "🤔 Thinking..",
@@ -41,6 +38,62 @@ THINKING_ANIMATIONS = [
     "✨ Generating..",
     "✨ Generating...",
 ]
+
+
+class ShortcutsScreen(ModalScreen):
+    """Modal screen showing keyboard shortcuts"""
+    
+    BINDINGS = [
+        Binding("escape", "dismiss", "Close"),
+        Binding("q", "dismiss", "Close"),
+        Binding("enter", "dismiss", "Close"),
+    ]
+    
+    def compose(self) -> ComposeResult:
+        yield Container(
+            Static("""[bold cyan]
+╔═══════════════════════════════════════════════════════════════╗
+║                     LOCAL AI - SHORTCUTS                       ║
+╚═══════════════════════════════════════════════════════════════╝[/]
+
+[bold green]Navigation[/]
+  [yellow]Tab[/]           Cycle between panels
+  [yellow]Ctrl+1[/]        Focus Sessions panel
+  [yellow]Ctrl+2[/]        Focus Models panel
+  [yellow]Ctrl+3[/]        Focus Chat input
+  [yellow]Escape[/]        Focus Chat input
+
+[bold green]Actions[/]
+  [yellow]Ctrl+N[/]        New Chat
+  [yellow]Ctrl+S[/]        Toggle Sessions panel
+  [yellow]Ctrl+M[/]        Toggle Models panel
+  [yellow]Enter[/]         Send message
+  [yellow]Ctrl+Q[/]        Quit
+
+[bold green]Mouse Controls[/]
+  [yellow]Click[/]         Select model or session
+  [yellow]Scroll[/]        Scroll through messages
+  [yellow]Double-click[/]  Quick select and focus
+
+[bold green]Model Categories[/]
+  [yellow]⚡[/] Fast       Low latency, quick responses
+  [yellow]🎯[/] Balanced   Good quality/speed balance
+  [yellow]💻[/] Coding     Optimized for code
+  [yellow]🚀[/] Large      Best quality (CPU mode)
+
+[bold green]Tips[/]
+  • Click [cyan]➕ New Chat[/] to start a conversation
+  • Select a model before chatting
+  • Chats are auto-saved to ~/Models/chats/
+  • Use CPU models (🚀) for complex tasks
+
+[dim]Press [bold]Escape[/], [bold]Enter[/], or [bold]Q[/] to close[/]
+""", id="shortcuts-content"),
+            id="shortcuts-container"
+        )
+    
+    def action_dismiss(self) -> None:
+        self.app.pop_screen()
 
 
 class ChatSession:
@@ -81,7 +134,7 @@ class ChatSession:
 
 
 class AnimatedLoading(Static):
-    """Animated loading indicator with custom animations"""
+    """Animated loading indicator"""
     
     is_loading = reactive(False)
     frame_index = reactive(0)
@@ -91,7 +144,7 @@ class AnimatedLoading(Static):
         self._timer = None
     
     def on_mount(self) -> None:
-        self._timer = self.set_interval(0.1, self.advance_frame)
+        self._timer = self.set_interval(0.15, self.advance_frame)
     
     def advance_frame(self) -> None:
         if self.is_loading:
@@ -109,7 +162,7 @@ class AnimatedLoading(Static):
 
 
 class ModelSelector(Container):
-    """Clickable model selector with mouse support"""
+    """Collapsible model selector"""
     
     MODELS = [
         ("⚡ qwen2.5:0.5b", "qwen2.5:0.5b", "Fastest - 400 tok/sec"),
@@ -125,19 +178,28 @@ class ModelSelector(Container):
     ]
     
     def compose(self) -> ComposeResult:
-        yield Static("[bold cyan]Select Model (click to choose)[/]", id="model-title")
-        yield OptionList(
-            *[Option(f"{icon}  [dim]{desc}[/]", id=model) 
-              for icon, model, desc in self.MODELS],
-            id="model-list"
-        )
+        with Collapsible(title="🤖 Models [Ctrl+M]", collapsed=False, id="models-collapsible"):
+            yield OptionList(
+                *[Option(f"{icon}  [dim]{desc}[/]", id=model) 
+                  for icon, model, desc in self.MODELS],
+                id="model-list"
+            )
+
+
+class SessionList(Container):
+    """Collapsible session list"""
+    
+    def compose(self) -> ComposeResult:
+        with Collapsible(title="📂 Sessions [Ctrl+S]", collapsed=False, id="sessions-collapsible"):
+            yield Button("➕ New Chat", id="new-chat-btn", variant="primary")
+            yield OptionList(id="session-list")
 
 
 class ChatPanel(Container):
-    """Main chat panel with messages"""
+    """Main chat panel"""
     
     def compose(self) -> ComposeResult:
-        yield Static("[bold]💬 Chat[/]", id="chat-title")
+        yield Static("[bold]💬 Chat[/] [dim](? for shortcuts)[/]", id="chat-title")
         yield VerticalScroll(id="messages")
         yield AnimatedLoading(id="loading")
         yield Horizontal(
@@ -145,15 +207,6 @@ class ChatPanel(Container):
             Button("📤", id="send-btn", variant="success"),
             id="input-row"
         )
-
-
-class SessionList(Container):
-    """Sidebar with chat sessions - clickable"""
-    
-    def compose(self) -> ComposeResult:
-        yield Static("[bold green]📂 Sessions[/]", id="sessions-title")
-        yield Button("➕ New Chat", id="new-chat-btn", variant="primary")
-        yield OptionList(id="session-list")
 
 
 class LocalAI(App):
@@ -164,20 +217,30 @@ class LocalAI(App):
         layout: horizontal;
     }
     
+    /* Modal shortcuts screen */
+    ShortcutsScreen {
+        align: center middle;
+    }
+    
+    #shortcuts-container {
+        width: 70;
+        height: auto;
+        max-height: 90%;
+        background: $surface;
+        border: thick $primary;
+        padding: 1 2;
+    }
+    
+    #shortcuts-content {
+        width: 100%;
+    }
+    
     /* Sidebar - Sessions */
     SessionList {
-        width: 25;
+        width: 28;
         background: $surface;
         border-right: tall $primary;
         padding: 1;
-    }
-    
-    #sessions-title {
-        text-align: center;
-        padding: 1;
-        background: $success;
-        color: $text;
-        text-style: bold;
     }
     
     #new-chat-btn {
@@ -187,42 +250,35 @@ class LocalAI(App):
     
     #session-list {
         height: 1fr;
-        background: $surface;
-    }
-    
-    #session-list > .option-list--option {
-        padding: 1;
-    }
-    
-    #session-list > .option-list--option-highlighted {
-        background: $primary;
+        min-height: 5;
     }
     
     /* Model Selector */
     ModelSelector {
-        width: 30;
+        width: 32;
         background: $surface;
         border-right: tall $secondary;
         padding: 1;
     }
     
-    #model-title {
-        text-align: center;
-        padding: 1;
-        background: $secondary;
-        color: $text;
-    }
-    
     #model-list {
         height: 1fr;
+        min-height: 5;
     }
     
-    #model-list > .option-list--option {
+    /* Collapsible styling */
+    Collapsible {
+        background: $surface;
+        padding: 0;
+    }
+    
+    CollapsibleTitle {
+        background: $primary;
         padding: 1;
     }
     
-    #model-list > .option-list--option-highlighted {
-        background: $secondary;
+    CollapsibleTitle:hover {
+        background: $primary-lighten-1;
     }
     
     /* Chat Panel */
@@ -285,20 +341,34 @@ class LocalAI(App):
         text-align: center;
         padding: 1;
     }
+    
+    /* Option list styling */
+    OptionList > .option-list--option {
+        padding: 1;
+    }
+    
+    OptionList > .option-list--option-highlighted {
+        background: $secondary;
+    }
     """
     
     BINDINGS = [
         Binding("ctrl+n", "new_chat", "New Chat", show=True),
         Binding("ctrl+q", "quit", "Quit", show=True),
-        Binding("ctrl+1", "focus_sessions", "Sessions"),
-        Binding("ctrl+2", "focus_models", "Models"),
-        Binding("ctrl+3", "focus_chat", "Chat"),
-        Binding("tab", "cycle_focus", "Cycle Panels"),
+        Binding("ctrl+s", "toggle_sessions", "Sessions"),
+        Binding("ctrl+m", "toggle_models", "Models"),
+        Binding("ctrl+1", "focus_sessions", "→Sessions"),
+        Binding("ctrl+2", "focus_models", "→Models"),
+        Binding("ctrl+3", "focus_chat", "→Chat"),
+        Binding("tab", "cycle_focus", "Cycle"),
         Binding("escape", "focus_input", "Input"),
+        Binding("question_mark", "show_shortcuts", "Help"),
+        Binding("f1", "show_shortcuts", "Help"),
     ]
     
     current_session: reactive[ChatSession | None] = reactive(None)
     current_model: reactive[str] = reactive("llama3.2:1b")
+    show_welcome: reactive[bool] = reactive(True)
     
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -310,20 +380,29 @@ class LocalAI(App):
         yield Footer()
     
     def on_mount(self) -> None:
-        """Initialize app"""
+        """Initialize app and show shortcuts"""
         self.title = "Local AI"
-        self.sub_title = "tmux-style Chat Interface"
+        self.sub_title = "Press ? for shortcuts"
         self.load_sessions()
         
-        # Add welcome message
-        messages = self.query_one("#messages", VerticalScroll)
-        messages.mount(Static(
-            "[dim]Welcome to Local AI! Click a model on the left, "
-            "then start a new chat or select an existing one.[/]",
-            classes="system-msg"
-        ))
+        # Show shortcuts on first open
+        self.push_screen(ShortcutsScreen())
         
         self.query_one("#chat-input", Input).focus()
+    
+    def action_show_shortcuts(self) -> None:
+        """Show shortcuts modal"""
+        self.push_screen(ShortcutsScreen())
+    
+    def action_toggle_sessions(self) -> None:
+        """Toggle sessions panel collapse"""
+        collapsible = self.query_one("#sessions-collapsible", Collapsible)
+        collapsible.collapsed = not collapsible.collapsed
+    
+    def action_toggle_models(self) -> None:
+        """Toggle models panel collapse"""
+        collapsible = self.query_one("#models-collapsible", Collapsible)
+        collapsible.collapsed = not collapsible.collapsed
     
     def load_sessions(self) -> None:
         """Load chat sessions from disk"""
@@ -338,7 +417,7 @@ class LocalAI(App):
             except Exception:
                 pass
         
-        for session in sessions[:20]:  # Limit to 20 recent
+        for session in sessions[:20]:
             short_name = session.name[:18] + "..." if len(session.name) > 20 else session.name
             session_list.add_option(Option(f"💬 {short_name}", id=str(session.file_path)))
     
@@ -355,7 +434,6 @@ class LocalAI(App):
         self.load_sessions()
         self.update_chat_display()
         
-        # Update title
         title = self.query_one("#chat-title", Static)
         title.update(f"[bold]💬 {name}[/]")
         
@@ -364,18 +442,16 @@ class LocalAI(App):
     
     @on(OptionList.OptionSelected, "#session-list")
     def on_session_selected(self, event: OptionList.OptionSelected) -> None:
-        """Handle session selection via mouse click"""
+        """Handle session selection"""
         file_path = Path(event.option_id)
         if file_path.exists():
             self.current_session = ChatSession.load(file_path)
             self.current_model = self.current_session.model
             self.update_chat_display()
             
-            # Update title
             title = self.query_one("#chat-title", Static)
             title.update(f"[bold]💬 {self.current_session.name}[/]")
             
-            # Highlight model in list
             model_list = self.query_one("#model-list", OptionList)
             for i, (_, model, _) in enumerate(ModelSelector.MODELS):
                 if model == self.current_model:
@@ -386,7 +462,7 @@ class LocalAI(App):
     
     @on(OptionList.OptionSelected, "#model-list")
     def on_model_selected(self, event: OptionList.OptionSelected) -> None:
-        """Handle model selection via mouse click"""
+        """Handle model selection"""
         self.current_model = event.option_id
         
         if self.current_session:
@@ -397,7 +473,7 @@ class LocalAI(App):
         self.query_one("#chat-input", Input).focus()
     
     def update_chat_display(self) -> None:
-        """Update chat messages display"""
+        """Update chat messages"""
         messages = self.query_one("#messages", VerticalScroll)
         messages.remove_children()
         
@@ -419,7 +495,7 @@ class LocalAI(App):
     @on(Button.Pressed, "#send-btn")
     @on(Input.Submitted, "#chat-input")
     async def send_message(self) -> None:
-        """Send message to AI"""
+        """Send message"""
         input_widget = self.query_one("#chat-input", Input)
         message = input_widget.value.strip()
         
@@ -431,30 +507,24 @@ class LocalAI(App):
         
         input_widget.value = ""
         
-        # Add user message
         self.current_session.add_message("user", message)
         self.update_chat_display()
         
-        # Get AI response with animation
         self.get_ai_response(message)
     
     @work(exclusive=True)
     async def get_ai_response(self, message: str) -> None:
-        """Get response from Ollama with loading animation"""
+        """Get AI response with loading animation"""
         loading = self.query_one("#loading", AnimatedLoading)
-        messages = self.query_one("#messages", VerticalScroll)
         
-        # Start loading animation
         loading.start()
         
         try:
-            # Build conversation history
             history = [
                 {"role": msg["role"], "content": msg["content"]}
                 for msg in self.current_session.messages
             ]
             
-            # Call Ollama API
             async with httpx.AsyncClient(timeout=300.0) as client:
                 response = await client.post(
                     "http://localhost:11434/api/chat",
@@ -469,7 +539,6 @@ class LocalAI(App):
                     data = response.json()
                     ai_content = data["message"]["content"]
                     
-                    # Save and display
                     self.current_session.add_message("assistant", ai_content)
                     self.call_from_thread(self.update_chat_display)
                 else:
@@ -495,7 +564,7 @@ class LocalAI(App):
         self.query_one("#chat-input", Input).focus()
     
     def action_cycle_focus(self) -> None:
-        """Cycle through panels with Tab"""
+        """Cycle through panels"""
         widgets = [
             self.query_one("#session-list", OptionList),
             self.query_one("#model-list", OptionList),
